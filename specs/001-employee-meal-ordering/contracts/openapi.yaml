@@ -1,0 +1,562 @@
+openapi: 3.0.3
+info:
+  title: 员工点餐小程序 API
+  description: |
+    员工点餐系统后端 REST API 规范
+    
+    **认证方式**: JWT Bearer Token (企业微信 OAuth2 登录后获取)
+    
+    **基础URL**: `http://localhost:3000/api` (开发环境)
+  version: 1.0.0
+  contact:
+    name: API Support
+    email: support@company.com
+
+servers:
+  - url: http://localhost:3000/api
+    description: 开发环境
+  - url: https://order-food.company.com/api
+    description: 生产环境
+
+tags:
+  - name: auth
+    description: 认证相关接口
+  - name: menu
+    description: 菜品管理接口
+  - name: orders
+    description: 订单管理接口
+  - name: admin
+    description: 行政后台接口
+
+security:
+  - bearerAuth: []
+
+paths:
+  /auth/wechat/login:
+    get:
+      tags: [auth]
+      summary: 企业微信登录（重定向到授权页）
+      description: 重定向用户到企业微信授权页面，获取 code
+      security: []
+      responses:
+        '302':
+          description: 重定向到企业微信授权页
+          headers:
+            Location:
+              schema:
+                type: string
+                example: https://open.weixin.qq.com/connect/oauth2/authorize?appid=xxx&redirect_uri=xxx
+
+  /auth/wechat/callback:
+    get:
+      tags: [auth]
+      summary: 企业微信 OAuth2 回调
+      description: 企业微信授权成功后回调，用 code 换取 access_token 和用户信息
+      security: []
+      parameters:
+        - name: code
+          in: query
+          required: true
+          schema:
+            type: string
+          description: 企业微信返回的临时授权码
+          example: "abcdef123456"
+      responses:
+        '200':
+          description: 登录成功，返回 JWT token
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    type: object
+                    properties:
+                      token:
+                        type: string
+                        description: JWT token（有效期 7 天）
+                        example: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+                      user:
+                        $ref: '#/components/schemas/Employee'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /menu:
+    get:
+      tags: [menu]
+      summary: 获取今日菜品列表
+      description: 返回当日可选菜品，按类别分组
+      security: []
+      parameters:
+        - name: date
+          in: query
+          schema:
+            type: string
+            format: date
+            example: "2025-11-03"
+          description: 查询日期（默认今日）
+        - name: category
+          in: query
+          schema:
+            type: string
+            enum: [中餐, 轻食, 饮品]
+          description: 菜品类别筛选
+      responses:
+        '200':
+          description: 成功返回菜品列表
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    type: object
+                    properties:
+                      date:
+                        type: string
+                        format: date
+                        example: "2025-11-03"
+                      priceLocked:
+                        type: boolean
+                        description: 当日价格是否已锁定
+                        example: true
+                      lockTime:
+                        type: string
+                        description: 价格锁定时间
+                        example: "10:00"
+                      items:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/MenuItem'
+
+  /orders:
+    post:
+      tags: [orders]
+      summary: 提交订单
+      description: 员工提交购物车中的菜品订单
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [items]
+              properties:
+                items:
+                  type: array
+                  description: 购物车菜品列表
+                  minItems: 1
+                  items:
+                    type: object
+                    required: [menuItemId, quantity]
+                    properties:
+                      menuItemId:
+                        type: integer
+                        description: 菜品 ID
+                        example: 1
+                      quantity:
+                        type: integer
+                        description: 购买数量
+                        minimum: 1
+                        maximum: 100
+                        example: 2
+      responses:
+        '201':
+          description: 订单创建成功
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    $ref: '#/components/schemas/Order'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          description: 今日已提交订单，禁止重复提交
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: false
+                  error:
+                    type: object
+                    properties:
+                      code:
+                        type: string
+                        example: "ORDER_ALREADY_EXISTS"
+                      message:
+                        type: string
+                        example: "今日已有订单，如需修改请联系行政"
+
+    get:
+      tags: [orders]
+      summary: 查询当前用户订单历史
+      description: 查询登录用户的历史订单
+      parameters:
+        - name: date
+          in: query
+          schema:
+            type: string
+            format: date
+          description: 查询指定日期订单（默认全部）
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [submitted, completed, cancelled]
+          description: 订单状态筛选
+      responses:
+        '200':
+          description: 成功返回订单列表
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Order'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /orders/{orderId}:
+    get:
+      tags: [orders]
+      summary: 查询订单详情
+      description: 查询指定订单的详细信息（包含菜品明细）
+      parameters:
+        - name: orderId
+          in: path
+          required: true
+          schema:
+            type: integer
+          description: 订单 ID
+          example: 1
+      responses:
+        '200':
+          description: 成功返回订单详情
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    $ref: '#/components/schemas/OrderDetail'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /admin/orders:
+    get:
+      tags: [admin]
+      summary: 查询所有订单（行政后台）
+      description: 查询指定日期的所有员工订单，支持按员工、菜品分组
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: date
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date
+          description: 查询日期
+          example: "2025-11-03"
+        - name: groupBy
+          in: query
+          schema:
+            type: string
+            enum: [employee, menu]
+            default: employee
+          description: 分组方式（按员工 or 按菜品）
+      responses:
+        '200':
+          description: 成功返回订单汇总
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  data:
+                    type: object
+                    properties:
+                      date:
+                        type: string
+                        format: date
+                        example: "2025-11-03"
+                      summary:
+                        type: object
+                        properties:
+                          totalOrders:
+                            type: integer
+                            description: 订单总数
+                            example: 50
+                          totalRevenue:
+                            type: number
+                            format: float
+                            description: 营业额（元）
+                            example: 1250.00
+                      orders:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/OrderDetail'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /admin/orders/export:
+    get:
+      tags: [admin]
+      summary: 导出订单清单（Excel）
+      description: 导出指定日期的订单清单为 Excel 文件
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: date
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date
+          description: 导出日期
+          example: "2025-11-03"
+      responses:
+        '200':
+          description: 成功返回 Excel 文件
+          content:
+            application/vnd.openxmlformats-officedocument.spreadsheetml.sheet:
+              schema:
+                type: string
+                format: binary
+          headers:
+            Content-Disposition:
+              schema:
+                type: string
+                example: attachment; filename="订单清单_2025-11-03.xlsx"
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        JWT Token 从 `/api/auth/wechat/callback` 获取
+        
+        使用方式: `Authorization: Bearer <token>`
+
+  schemas:
+    Employee:
+      type: object
+      properties:
+        id:
+          type: string
+          description: 企业微信 userId
+          example: "zhangsan"
+        name:
+          type: string
+          description: 员工姓名
+          example: "张三"
+        department:
+          type: string
+          description: 所属部门
+          example: "产品部"
+        createdAt:
+          type: integer
+          description: 创建时间（Unix 时间戳）
+          example: 1699000000
+
+    MenuItem:
+      type: object
+      properties:
+        id:
+          type: integer
+          description: 菜品 ID
+          example: 1
+        name:
+          type: string
+          description: 菜品名称
+          example: "宫保鸡丁套餐"
+        category:
+          type: string
+          enum: [中餐, 轻食, 饮品]
+          description: 菜品类别
+          example: "中餐"
+        price:
+          type: number
+          format: float
+          description: 单价（元）
+          example: 25.00
+        availableDate:
+          type: string
+          format: date
+          description: 供应日期
+          example: "2025-11-03"
+        priceLockedAt:
+          type: string
+          nullable: true
+          description: 价格锁定时间（HH:MM）
+          example: "10:00"
+
+    Order:
+      type: object
+      properties:
+        id:
+          type: integer
+          description: 订单 ID
+          example: 1
+        employeeId:
+          type: string
+          description: 员工 ID
+          example: "zhangsan"
+        totalPrice:
+          type: number
+          format: float
+          description: 订单总价（元）
+          example: 65.00
+        status:
+          type: string
+          enum: [submitted, completed, cancelled]
+          description: 订单状态
+          example: "submitted"
+        submittedAt:
+          type: integer
+          description: 提交时间（Unix 时间戳）
+          example: 1699000000
+
+    OrderDetail:
+      allOf:
+        - $ref: '#/components/schemas/Order'
+        - type: object
+          properties:
+            employee:
+              $ref: '#/components/schemas/Employee'
+            items:
+              type: array
+              description: 订单明细
+              items:
+                type: object
+                properties:
+                  id:
+                    type: integer
+                    example: 1
+                  menuItemId:
+                    type: integer
+                    example: 1
+                  menuItemName:
+                    type: string
+                    example: "宫保鸡丁套餐"
+                  quantity:
+                    type: integer
+                    example: 2
+                  priceSnapshot:
+                    type: number
+                    format: float
+                    description: 下单时单价（元）
+                    example: 25.00
+                  subtotal:
+                    type: number
+                    format: float
+                    description: 小计（元）
+                    example: 50.00
+
+    Error:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: false
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              description: 错误代码
+              example: "VALIDATION_ERROR"
+            message:
+              type: string
+              description: 错误描述
+              example: "参数验证失败"
+            details:
+              type: object
+              description: 详细错误信息（可选）
+
+  responses:
+    BadRequest:
+      description: 请求参数错误
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            success: false
+            error:
+              code: "VALIDATION_ERROR"
+              message: "购物车为空，请先选择菜品"
+
+    Unauthorized:
+      description: 未授权（未登录或 token 无效）
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            success: false
+            error:
+              code: "UNAUTHORIZED"
+              message: "请先登录"
+
+    Forbidden:
+      description: 权限不足（非管理员）
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            success: false
+            error:
+              code: "FORBIDDEN"
+              message: "仅限行政专员访问"
+
+    NotFound:
+      description: 资源不存在
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            success: false
+            error:
+              code: "NOT_FOUND"
+              message: "订单不存在"
